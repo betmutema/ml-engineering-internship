@@ -1,1 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Does a Model Actually Beat Random Selection for Content-Refresh Prioritization?</title>
+<meta name="description" content="A validation case study on 17.7M rows of real production search data: why a model that looked strong under a naive split failed to beat random selection under an honest one.">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  body { background:#FAFAFA; color:#1A1A1A; font-family:'Inter', sans-serif; margin:0; line-height:1.6; }
+  .wrap { max-width:760px; margin:0 auto; padding:48px 24px 80px; }
+  h1 { font-size:28px; line-height:1.3; margin-bottom:8px; }
+  h2 { font-size:20px; color:#1E3A8A; margin-top:48px; border-bottom:1px solid #DDE4E7; padding-bottom:8px; }
+  h3 { font-size:16px; margin-top:28px; }
+  p { font-size:16px; }
+  .byline { color:#5F5E5A; font-size:14px; margin-bottom:32px; }
+  .abstract { background:#F1F0EC; border-left:3px solid #1E3A8A; padding:20px 24px; font-size:15px; }
+  table { border-collapse:collapse; width:100%; margin:20px 0; font-size:14px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid #DDE4E7; }
+  th { background:#F1F0EC; }
+  .highlight { color:#B04A4A; font-weight:700; }
+  .good { color:#0F766E; font-weight:700; }
+  img { max-width:100%; border:1px solid #DDE4E7; border-radius:4px; margin:16px 0; }
+  figcaption { font-size:13px; color:#5F5E5A; margin-top:-8px; margin-bottom:24px; }
+  code { background:#F1F0EC; padding:2px 6px; border-radius:3px; font-size:14px; }
+  ul { padding-left:22px; }
+  a { color:#0F766E; }
+  .archetype-table td:first-child { font-weight:600; }
+  footer { margin-top:60px; padding-top:20px; border-top:1px solid #DDE4E7; font-size:13px; color:#5F5E5A; }
+</style>
+</head>
+<body>
+<div class="wrap">
 
+<h1>Does a Machine Learning Model Actually Beat Random Selection for Content-Refresh Prioritization?</h1>
+<p class="byline">Brendon Mutema · FlyRank ML Engineering Internship · September 2026</p>
+
+<div class="abstract">
+<strong>Abstract.</strong> Content teams can only manually review a limited number of pages each week, so the real decision is prioritization: does a rule or a trained model rank declining content better than reviewing it at random? This study uses 17.7 million rows of real production search-performance data spanning 349,411 content items across 59 clients. A Random Forest classifier and a transparent age/visibility rule were each evaluated under a client-grouped train/test split, designed to prevent a model from simply memorizing a client's scale rather than learning genuine decline signal. Neither the rule (precision@50 = 0.100) nor the model (0.220) exceeded the 0.279 base rate on clients the model had never seen, despite the same model appearing to score 0.940 under a naive, ungrouped split. The result argues that validation design, not model complexity, was the deciding factor here, and produces a human-reviewed, decision-support playbook rather than an automated one.
+</div>
+
+<h2>Introduction</h2>
+<p>A content team with hundreds of thousands of pages and one reviewer's worth of weekly attention faces a prioritization problem, not a detection problem. The question isn't "is this page declining?", it's "which handful of pages is worth checking first?" This paper tests two candidate approaches to that ranking problem, a simple, transparent rule and a trained classifier, against the honest baseline of picking pages at random.</p>
+<p>The decision this supports is concrete: a weekly content-refresh review queue. Getting the ranking wrong doesn't just waste review time, it actively displaces genuinely declining pages with ones that only look interesting to a model that has learned the wrong thing.</p>
+
+<h2>Data</h2>
+<p>This work uses the FlyRank ML Engineering Internship warehouse release: <code>fact_content_daily_performance</code> (~79M rows total) and <code>dim_content</code>. The working sample is a 60-day window ending 2026-03-31, a mid-panel month, deliberately excluding the dataset's sealed final month per its own documentation.</p>
+<table>
+<tr><th>Rows in window</th><td>17,717,009</td></tr>
+<tr><th>Content items</th><td>349,411</td></tr>
+<tr><th>Clients</th><td>59</td></tr>
+<tr><th>Date range</th><td>2026-01-30 to 2026-03-31</td></tr>
+</table>
+<p><strong>Excluded, and why:</strong> <code>fact_content_query_90d</code> was excluded, its fixed 90-day window overlaps the 30-day label window with no safe way to split it. Raw GA4 columns were excluded, only 3.2% of rows have GA4 data available for this window. All identifiers throughout are salted client/content hashes; no client names, URLs, or raw search queries appear anywhere in this paper or its underlying notebooks.</p>
+
+<h2>Methodology</h2>
+<p>The label, <code>is_declining</code>, is a >20% drop in impressions over the trailing 30 days versus the prior 30 days, computed only from <code>gsc_impressions</code>. Five features were used, all knowable before the decision moment: <code>imp_prev30</code>, <code>clk_prev30</code>, <code>pos_prev30</code>, <code>ctr_prev30</code>, and <code>content_age_days</code>.</p>
+<p>The baseline is a transparent rule: content age ≥ 365 days AND prior-30-day impressions ≥ 250.</p>
+<p><strong>Validation design</strong> is the central methodological decision in this paper. Rather than a random train/test split, the split is grouped by client, ensuring no client's content appears in both sets. This directly tests whether a result generalizes to a client the model has never encountered, not just to unseen pages from familiar clients.</p>
+<p><strong>Leakage checks:</strong> a single-feature AUC smell test confirmed no individual feature comes anywhere close to trivially predicting the label:</p>
+<table>
+<tr><th>Feature</th><th>AUC</th></tr>
+<tr><td><code>content_age_days</code></td><td>0.550</td></tr>
+<tr><td><code>pos_prev30</code></td><td>0.500</td></tr>
+<tr><td><code>imp_prev30</code></td><td>0.450</td></tr>
+<tr><td><code>ctr_prev30</code></td><td>0.422</td></tr>
+<tr><td><code>clk_prev30</code></td><td>0.421</td></tr>
+</table>
+<p>A second check, comparing a naive (ungrouped) split against the grouped split directly, surfaced the paper's central finding, described next.</p>
+
+<h2>Results</h2>
+<p>The following table shows precision@50 (of the top 50 ranked items, what fraction were genuinely declining) across every method, all evaluated on the same underlying population:</p>
+<table>
+<tr><th>Method</th><th>Precision@50</th></tr>
+<tr><td>Base rate (random selection)</td><td>0.279</td></tr>
+<tr><td>Baseline rule</td><td>0.100</td></tr>
+<tr><td>Random Forest — naive split</td><td class="highlight">0.940</td></tr>
+<tr><td>Random Forest — grouped/honest split</td><td class="good">0.220</td></tr>
+</table>
+
+<figure>
+<img src="img/precision_comparison.png" alt="Bar chart comparing precision@50 across base rate, baseline rule, naive-split model, and grouped-split model">
+<figcaption>Fig. 1 — The naive split (grey/red) looks strong. The honest, grouped split (blue) does not beat the base rate.</figcaption>
+</figure>
+
+<p>The 0.940 naive-split score is not genuine predictive skill. Under a random split, a client's near-duplicate feature values land in both train and test, letting the model "recognize" a client rather than learn transferable decline signal. Once client identity is properly held out, performance collapses to 0.220, below random selection.</p>
+
+<figure>
+<img src="img/permutation_importance.png" alt="Bar chart of permutation importance for each feature under the grouped/honest split model">
+<figcaption>Fig. 2 — Under the honest split, most features contribute at or below zero, shuffling them barely changes, or slightly improves, accuracy.</figcaption>
+</figure>
+
+<table>
+<tr><th>Feature</th><th>Permutation importance</th></tr>
+<tr><td><code>pos_prev30</code></td><td>-0.0025</td></tr>
+<tr><td><code>content_age_days</code></td><td>-0.0029</td></tr>
+<tr><td><code>imp_prev30</code></td><td>-0.0077</td></tr>
+<tr><td><code>ctr_prev30</code></td><td>-0.0082</td></tr>
+<tr><td><code>clk_prev30</code></td><td>-0.0117</td></tr>
+</table>
+
+<h2>Limitations &amp; Honest Framing</h2>
+<p>This model should be treated as decision-support only, not a validated predictor, for three specific reasons:</p>
+<ul>
+<li>Precision@50 does not exceed the base rate on unseen clients.</li>
+<li>The top 10 ranked items in this run are <strong>70% concentrated in a single client</strong> (with a second client contributing most of the remainder), suggesting the model may be learning client-specific scale rather than genuine decline signal.</li>
+<li>Permutation importance is at or below zero for all five features.</li>
+</ul>
+<p>No causal claim is made about <em>why</em> content declines, only a correlational, unvalidated ranking. This paper's finding is deliberately about validation methodology, not a claim that the underlying prediction problem is unsolvable, a different feature set (e.g., client-relative rather than absolute scale) is a plausible next step, not attempted here.</p>
+
+<h2>Ranked Recommendations</h2>
+<p>Two archetypes emerge from the ranked queue:</p>
+<table class="archetype-table">
+<tr><th>Archetype</th><th>Trigger</th><th>Verifiability</th></tr>
+<tr><td>refresh_candidate</td><td>Matches the transparent age/visibility rule</td><td>Independently verifiable by eye</td></tr>
+<tr><td>investigate_decline</td><td>Flagged by the model alone</td><td>Requires checking underlying feature values directly</td></tr>
+</table>
+<p><strong>Every item, regardless of archetype, requires human review before any action.</strong> Given the results above, presenting this ranking as pre-validated would be dishonest. What must never be automated: publishing, rewriting, or deleting content based on this score; reducing budget tied to a "declining" label; or presenting the score to a client as a certainty metric. See the full action playbook for the complete no-go list and monitoring/retrain triggers.</p>
+
+<h2>Reproducibility</h2>
+<p>All code, the executed notebook, and full run history are available in the project repository:</p>
+<ul>
+<li>Repository: <a href="https://github.com/betmutema/ml-engineering-internship">github.com/betmutema/ml-engineering-internship</a></li>
+<li>Capstone notebook: <a href="https://github.com/betmutema/ml-engineering-internship/blob/main/work/notebooks/capstone.ipynb">work/notebooks/capstone.ipynb</a></li>
+<li>Full pipeline history: <code>work/notebooks/w03_data_contract.ipynb</code> through <code>w07_action_playbook.ipynb</code></li>
+</ul>
+<p>Random seed 42 used throughout for the train/test split and the Random Forest classifier. Re-running the capstone notebook top to bottom against the same warehouse release reproduces this paper's numbers (subject to minor variation from non-deterministic row ordering in the underlying warehouse query, documented in the notebook itself).</p>
+
+<footer>
+<h3 style="margin-top:0;">Acknowledgments &amp; Data Credit</h3>
+<p>Built on the FlyRank ML Internship dataset. Learn more at <a href="https://flyrank.ai" target="_blank" rel="noopener">flyrank.ai</a>.</p>
+</footer>
+
+</div>
+</body>
+</html>
